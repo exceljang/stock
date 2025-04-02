@@ -1,12 +1,11 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
-import os
-
 from data_collector import KRXDataCollector
 from data_processor import DataProcessor
-from utils import format_date, get_last_business_day, validate_inputs
+from utils import format_date, get_default_date, format_number
 
+#tes
 # 페이지 설정
 st.set_page_config(
     page_title="KRX 주식 데이터 분석",
@@ -14,97 +13,127 @@ st.set_page_config(
     layout="wide"
 )
 
+# 세션 상태 초기화
+if 'should_refresh' not in st.session_state:
+    st.session_state['should_refresh'] = False
+if 'last_date' not in st.session_state:
+    st.session_state['last_date'] = None
+if 'last_price' not in st.session_state:
+    st.session_state['last_price'] = None
+if 'last_volume' not in st.session_state:
+    st.session_state['last_volume'] = None
+if 'last_change_rate' not in st.session_state:
+    st.session_state['last_change_rate'] = None
+if 'initial_data' not in st.session_state:
+    st.session_state['initial_data'] = None
+
 # 제목
 st.title("KRX 주식 데이터 분석")
+st.markdown("---")
 
-# 사이드바 - 입력 파라미터
-st.sidebar.header("검색 조건")
-
-# 날짜 선택 (오늘 날짜로 기본 설정)
-today = datetime.now().date()
-selected_date = st.sidebar.date_input(
-    "날짜 선택",
-    value=today,
-    max_value=today,
-    min_value=datetime(2020, 1, 1).date()
-)
-
-# 최소 종가 입력 (정수만)
-min_price = st.sidebar.number_input(
-    "최소 종가",
-    min_value=0,
-    value=1000,
-    step=100,
-    format="%d"  # 정수 형식으로 표시
-)
-
-# 최소 거래량 입력
-min_volume = st.sidebar.number_input(
-    "최소 거래량",
-    min_value=0,
-    value=10000,
-    step=1000
-)
-
-# 최소 등락률 입력 (정수만)
-min_change_rate = st.sidebar.number_input(
-    "최소 등락률",
-    min_value=0,
-    value=1,
-    step=1,
-    format="%d"  # 정수 형식으로 표시
-)
-
-# 데이터 수집 및 처리
-if st.sidebar.button("데이터 조회"):
-    # 입력값 검증
-    is_valid, error_message = validate_inputs(min_price, min_volume, min_change_rate)
+# 사이드바 - 필터 설정
+with st.sidebar:
+    st.header("필터 설정")
     
-    if not is_valid:
-        st.error(error_message)
-    else:
-        with st.spinner("데이터를 수집하고 있습니다..."):
-            # 데이터 수집
-            collector = KRXDataCollector()
-            date_str = format_date(selected_date)
-            df = collector.get_stock_data(date_str)
+    # 날짜 선택
+    default_date = get_default_date()
+    selected_date = st.date_input(
+        "날짜 선택",
+        value=default_date,
+        max_value=datetime.now(),
+        min_value=datetime(2020, 1, 1)
+    )
+    
+    # 필터 조건
+    min_price = st.number_input(
+        "종가",
+        min_value=0,
+        value=5000,
+        step=100
+    )
+    
+    min_volume = st.number_input(
+        "거래량",
+        min_value=0,
+        value=80000,
+        step=1000
+    )
+    
+    min_change_rate = st.number_input(
+        "등락률",
+        min_value=-100.0,
+        value=0.0,
+        step=0.1,
+        format="%.1f"
+    )
+    
+    # 정렬 기준
+    sort_by = st.selectbox(
+        "정렬 기준",
+        options=["등락률", "종가", "거래량"],
+        index=0
+    )
+    
+    sort_ascending = st.checkbox("오름차순 정렬", value=False)
+    
+    # 조회 버튼
+    if st.button("조회", type="primary"):
+        st.session_state['should_refresh'] = True
+        st.session_state['last_date'] = selected_date
+        st.session_state['last_price'] = min_price
+        st.session_state['last_volume'] = min_volume
+        st.session_state['last_change_rate'] = min_change_rate
+
+# 메인 컨텐츠
+try:
+    # 초기 데이터 로드 또는 조건이 변경된 경우 데이터 갱신
+    if st.session_state['initial_data'] is None or st.session_state['should_refresh']:
+        # 데이터 수집
+        collector = KRXDataCollector()
+        date_str = format_date(selected_date)
+        df = collector.get_stock_data(date_str)
+        
+        if df.empty:
+            st.error("데이터를 불러올 수 없습니다. 날짜를 확인해주세요.")
+        else:
+            # 데이터 처리
+            processor = DataProcessor()
+            processor.set_data(df)
+            filtered_df = processor.filter_data(min_price, min_volume, min_change_rate)
+            sorted_df = processor.sort_data(filtered_df, sort_by, sort_ascending)
             
-            if df.empty:
-                st.error("데이터를 수집하는 중 오류가 발생했습니다.")
-            else:
-                # 데이터 필터링
-                processor = DataProcessor()
-                filtered_df = processor.filter_data(df, min_price, min_volume, min_change_rate)
+            if len(sorted_df) > 0:
+                # 데이터 개수 표시
+                st.markdown(f"### 검색 결과: {len(sorted_df)}개")
                 
-                if filtered_df.empty:
-                    st.warning("조건에 맞는 데이터가 없습니다.")
-                else:
-                    # 결과 표시
-                    st.subheader("필터링된 결과")
-                    st.write(f"검색 결과: {len(filtered_df)}개 종목 (등락률 > {min_change_rate}%인 종목 중에서 검색)")
-                    st.dataframe(
-                        filtered_df,
-                        use_container_width=True,
-                        hide_index=True
-                    )
-                    
-                    # CSV 다운로드 버튼
-                    csv = filtered_df.to_csv(index=False, encoding='utf-8-sig')
+                # 데이터 테이블
+                st.dataframe(
+                    sorted_df,
+                    column_config={
+                        "종목코드": st.column_config.TextColumn("종목코드", width="small"),
+                        "종목명": st.column_config.TextColumn("종목명", width="medium"),
+                        "시장구분": st.column_config.TextColumn("시장구분", width="small"),
+                        "종가": st.column_config.NumberColumn("종가", format="%d"),
+                        "거래량": st.column_config.NumberColumn("거래량", format="%d"),
+                        "등락률": st.column_config.NumberColumn("등락률", format="%.2f%%")
+                    },
+                    hide_index=True
+                )
+                
+                # CSV 다운로드
+                csv_file = processor.save_to_csv(sorted_df, date_str)
+                with open(csv_file, 'rb') as f:
                     st.download_button(
                         label="CSV 다운로드",
-                        data=csv,
+                        data=f,
                         file_name=f"krx_data_{date_str}.csv",
                         mime="text/csv"
                     )
+            else:
+                st.warning("현재 설정된 조건에 맞는 종목이 없습니다. 필터 조건을 조정해보세요.")
+            
+            # 초기 데이터 저장
+            st.session_state['initial_data'] = sorted_df
 
-# 사용 방법 안내
-with st.expander("사용 방법"):
-    st.markdown("""
-    1. 왼쪽 사이드바에서 날짜를 선택합니다.
-    2. 최소 종가를 입력합니다.
-    3. 최소 거래량을 입력합니다.
-    4. 최소 등락률을 입력합니다.
-    5. '데이터 조회' 버튼을 클릭합니다.
-    6. 필터링된 결과가 표시됩니다.
-    7. 'CSV 다운로드' 버튼을 클릭하여 데이터를 저장합니다.
-    """) 
+except Exception as e:
+    st.error(f"오류가 발생했습니다: {str(e)}") 
